@@ -131,7 +131,7 @@ function engineStart() {
   const lp = a.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 130;
   engNode.connect(lp); lp.connect(engGain); engNode.start();
 }
-function engineVol(v) { if(engGain) engGain.gain.linearRampToValueAtTime(v*0.44, ac().currentTime+0.03); }
+function engineVol(v) { if(engGain) engGain.gain.linearRampToValueAtTime(v*0.88, ac().currentTime+0.03); }
 function engineStop() { if(!engNode) return; try{engNode.stop()}catch(e){} engNode=null; engGain=null; }
 
 function sndRotate() {
@@ -158,7 +158,7 @@ function sndExplosion(intensity) {
   sub.frequency.setValueAtTime(80 + intensity*40, t0);
   sub.frequency.exponentialRampToValueAtTime(18, t0 + 1.5);
   subG.gain.setValueAtTime(0, t0);
-  subG.gain.linearRampToValueAtTime(1.4 + intensity*0.5, t0 + 0.01);
+  subG.gain.linearRampToValueAtTime(0.7 + intensity*0.25, t0 + 0.01);
   subG.gain.exponentialRampToValueAtTime(0.001, t0 + 2.2);
   sub.connect(subG); subG.connect(comp);
   sub.start(t0); sub.stop(t0 + 2.5);
@@ -179,7 +179,7 @@ function sndExplosion(intensity) {
   const roarLP  = a.createBiquadFilter(); roarLP.type = 'lowpass';  roarLP.frequency.value = 800;
   const roarHP  = a.createBiquadFilter(); roarHP.type = 'highpass'; roarHP.frequency.value = 40;
   const roarPk  = a.createBiquadFilter(); roarPk.type = 'peaking';  roarPk.frequency.value = 150; roarPk.gain.value = 14;
-  const roarG   = a.createGain(); roarG.gain.setValueAtTime(1.2 + intensity*0.6, t0);
+  const roarG   = a.createGain(); roarG.gain.setValueAtTime(0.6 + intensity*0.3, t0);
   roarSrc.connect(roarHP); roarHP.connect(roarLP); roarLP.connect(roarPk); roarPk.connect(roarG);
   roarG.connect(comp);
   roarSrc.start(t0);
@@ -192,7 +192,7 @@ function sndExplosion(intensity) {
   for (let i = 0; i < crackLen; i++) cd[i] = (Math.random()*2-1) * Math.exp(-i/(crackLen*0.08));
   const crackSrc = a.createBufferSource(); crackSrc.buffer = crackBuf;
   const crackHP  = a.createBiquadFilter(); crackHP.type = 'highpass'; crackHP.frequency.value = 300;
-  const crackG   = a.createGain(); crackG.gain.value = 1.5 + intensity*0.8;
+  const crackG   = a.createGain(); crackG.gain.value = 0.75 + intensity*0.4;
   crackSrc.connect(crackHP); crackHP.connect(crackG); crackG.connect(comp);
   crackSrc.start(t0);
 
@@ -208,7 +208,7 @@ function sndExplosion(intensity) {
   const debSrc = a.createBufferSource(); debSrc.buffer = debBuf;
   const debHP  = a.createBiquadFilter(); debHP.type = 'highpass'; debHP.frequency.value = 1800;
   const debLP  = a.createBiquadFilter(); debLP.type = 'lowpass';  debLP.frequency.value = 8000;
-  const debG   = a.createGain(); debG.gain.setValueAtTime(0.5 + intensity*0.3, t0 + 0.05);
+  const debG   = a.createGain(); debG.gain.setValueAtTime(0.25 + intensity*0.15, t0 + 0.05);
   debSrc.connect(debHP); debHP.connect(debLP); debLP.connect(debG); debG.connect(comp);
   debSrc.start(t0 + 0.05);
 
@@ -225,7 +225,7 @@ function sndExplosion(intensity) {
   }
   const rumSrc = a.createBufferSource(); rumSrc.buffer = rumBuf;
   const rumLP  = a.createBiquadFilter(); rumLP.type = 'lowpass'; rumLP.frequency.value = 120;
-  const rumG   = a.createGain(); rumG.gain.setValueAtTime(0.8 + intensity*0.4, t0 + 0.1);
+  const rumG   = a.createGain(); rumG.gain.setValueAtTime(0.4 + intensity*0.2, t0 + 0.1);
   rumSrc.connect(rumLP); rumLP.connect(rumG); rumG.connect(comp);
   rumSrc.start(t0 + 0.1);
 
@@ -237,7 +237,7 @@ function sndExplosion(intensity) {
   whoosh.frequency.setValueAtTime(200, t0 + 0.02);
   whoosh.frequency.exponentialRampToValueAtTime(60, t0 + 0.8);
   whooshG.gain.setValueAtTime(0, t0 + 0.02);
-  whooshG.gain.linearRampToValueAtTime(0.35 + intensity*0.2, t0 + 0.06);
+  whooshG.gain.linearRampToValueAtTime(0.175 + intensity*0.1, t0 + 0.06);
   whooshG.gain.exponentialRampToValueAtTime(0.001, t0 + 0.9);
   whoosh.connect(whooshF); whooshF.connect(whooshG); whooshG.connect(comp);
   whoosh.start(t0 + 0.02); whoosh.stop(t0 + 1.0);
@@ -261,21 +261,6 @@ function sndEject() {
   g.gain.exponentialRampToValueAtTime(0.001, t0 + 0.6);
   src.connect(bp); bp.connect(g); g.connect(a.destination);
   src.start(t0);
-}
-
-function sndScream(intensity) {
-  const a=ac(), o=a.createOscillator(), lfo=a.createOscillator();
-  const lg=a.createGain(), g=a.createGain();
-  o.type='sawtooth';
-  o.frequency.setValueAtTime(250,a.currentTime);
-  o.frequency.linearRampToValueAtTime(600+intensity*700,a.currentTime+0.7+intensity*0.5);
-  lfo.type='sine'; lfo.frequency.value=5+intensity*10;
-  lg.gain.value=15+intensity*45;
-  lfo.connect(lg); lg.connect(o.frequency);
-  const dur=1.0+intensity*0.6;
-  g.gain.setValueAtTime(0.16,a.currentTime); g.gain.exponentialRampToValueAtTime(0.001,a.currentTime+dur);
-  o.connect(g); g.connect(a.destination);
-  o.start(); lfo.start(); o.stop(a.currentTime+dur); lfo.stop(a.currentTime+dur);
 }
 
 function sndSplat() {
@@ -532,6 +517,8 @@ function spawnAstronaut(x, y, vx, vy, intensity) {
     av: spin, angle: 0,
     grounded: false, splatTime: 0, finalAngle: 0, splatBlobs: [],
     screamTimer: 0.9 + intensity * 0.5, screamMax: 0.9 + intensity * 0.5, intensity,
+    launchY: y,   // Y position at ejection (used as baseline for height calcs)
+    peakY:   y,   // tracks the highest point reached (minimum Y = highest on screen)
   };
 }
 
@@ -651,7 +638,6 @@ function updateExploding(dt) {
     spawnDebris(rocket.x, rocket.y, rocket.vx, rocket.vy, crashIntensity);
     astronaut = spawnAstronaut(rocket.x, rocket.y-RH*0.3, rocket.vx, rocket.vy, crashIntensity);
     sndEject();
-    setTimeout(() => sndScream(crashIntensity), 500);
     STATE = 'crashed'; crashTimer = 0;
   }
 }
@@ -673,6 +659,7 @@ function updateCrashed(dt) {
     astronaut.x  += astronaut.vx*dt; astronaut.y += astronaut.vy*dt;
     astronaut.angle += astronaut.av*dt;
     astronaut.screamTimer -= dt;
+
     // Soft clamp to screen edges (gentle bounce rather than wrap)
     if (astronaut.x < 20)              { astronaut.x = 20;              astronaut.vx =  Math.abs(astronaut.vx)*0.4; }
     if (astronaut.x > canvas.width-20) { astronaut.x = canvas.width-20; astronaut.vx = -Math.abs(astronaut.vx)*0.4; }
