@@ -5,10 +5,11 @@
 <title>Rocket Lander</title>
 <style>
 * { margin:0; padding:0; box-sizing:border-box; }
-body { background:#fff; overflow:hidden; }
+html, body { background:#111; overflow:hidden; width:100%; height:100%; display:flex; align-items:center; justify-content:center; }
+#wrap { position:relative; background:#fff; }
 canvas { display:block; }
 #overlay {
-  position:fixed; inset:0; display:flex; align-items:center;
+  position:absolute; inset:0; display:flex; align-items:center;
   justify-content:center; pointer-events:none;
 }
 #menu {
@@ -24,9 +25,29 @@ canvas { display:block; }
 #menu .tips { font-size:.72rem; opacity:.4; margin-top:.8rem; line-height:1.9; }
 #menu .go { margin-top:1.3rem; font-size:.95rem; font-weight:bold; letter-spacing:.15em; animation:blink 1.2s step-end infinite; }
 @keyframes blink { 50%{opacity:0} }
+#nokb {
+  display:none; position:fixed; inset:0; background:#111;
+  align-items:center; justify-content:center; z-index:999;
+}
+#nokb-box {
+  font-family:'Courier New',monospace; color:#eee; text-align:center;
+  border:2px solid #555; padding:2.5rem 3rem; max-width:420px;
+}
+#nokb-box h2 { font-size:1.6rem; letter-spacing:.2em; text-transform:uppercase; margin-bottom:1rem; }
+#nokb-box p  { font-size:.9rem; line-height:1.9; opacity:.7; }
+#nokb-box .icon { font-size:3rem; margin-bottom:1rem; }
 </style>
 </head>
 <body>
+<div id="nokb">
+  <div id="nokb-box">
+    <div class="icon">⌨️</div>
+    <h2>Keyboard Required</h2>
+    <p>Rocket Lander requires a physical keyboard to play.<br><br>
+    Please open this game on a desktop or laptop computer.</p>
+  </div>
+</div>
+<div id="wrap">
 <canvas id="c"></canvas>
 <div id="overlay">
   <div id="menu">
@@ -42,6 +63,7 @@ canvas { display:block; }
     <div class="go">— PRESS ANY KEY TO LAUNCH —</div>
   </div>
 </div>
+</div>
 
 <script>
 "use strict";
@@ -53,9 +75,35 @@ const canvas  = document.getElementById('c');
 const ctx     = canvas.getContext('2d');
 const menuEl  = document.getElementById('menu');
 const overlay = document.getElementById('overlay');
+const wrapEl  = document.getElementById('wrap');
+const nokbEl  = document.getElementById('nokb');
 
-// ── resize ──
-function resize() { canvas.width = innerWidth; canvas.height = innerHeight; }
+// ── Keyboard detection ──
+// Touch-only devices have no keyboard. Detect via pointer/hover capability.
+const hasKeyboard = window.matchMedia('(hover:hover) and (pointer:fine)').matches;
+if (!hasKeyboard) {
+  nokbEl.style.display = 'flex';
+  wrapEl.style.display = 'none';
+}
+
+// ── 16:9 locked resize ──
+const ASPECT = 16 / 9;
+function resize() {
+  const winW = window.innerWidth;
+  const winH = window.innerHeight;
+  let w, h;
+  if (winW / winH > ASPECT) {
+    // Window is wider than 16:9 — fit by height
+    h = winH; w = Math.floor(h * ASPECT);
+  } else {
+    // Window is taller than 16:9 — fit by width
+    w = winW; h = Math.floor(w / ASPECT);
+  }
+  canvas.width  = w;
+  canvas.height = h;
+  wrapEl.style.width  = w + 'px';
+  wrapEl.style.height = h + 'px';
+}
 resize();
 addEventListener('resize', resize);
 
@@ -94,34 +142,125 @@ function sndRotate() {
 }
 
 function sndExplosion(intensity) {
-  const a=ac();
-  // Low boom
-  const len=Math.floor(a.sampleRate*0.6);
-  const buf=a.createBuffer(1,len,a.sampleRate);
-  const d=buf.getChannelData(0);
-  for(let i=0;i<len;i++) d[i]=(Math.random()*2-1)*Math.exp(-i/(len*0.18));
-  const src=a.createBufferSource(); src.buffer=buf;
-  const lp=a.createBiquadFilter(); lp.type='lowpass'; lp.frequency.value=400;
-  const g=a.createGain(); g.gain.setValueAtTime(0.7+intensity*0.4, a.currentTime);
-  src.connect(lp); lp.connect(g); g.connect(a.destination); src.start();
-  // Crackle layer
-  const len2=Math.floor(a.sampleRate*0.4);
-  const buf2=a.createBuffer(1,len2,a.sampleRate);
-  const d2=buf2.getChannelData(0);
-  for(let i=0;i<len2;i++) d2[i]=(Math.random()*2-1)*Math.exp(-i/(len2*0.12));
-  const src2=a.createBufferSource(); src2.buffer=buf2;
-  const hp=a.createBiquadFilter(); hp.type='highpass'; hp.frequency.value=800;
-  const g2=a.createGain(); g2.gain.setValueAtTime(0.5+intensity*0.3, a.currentTime+0.05);
-  src2.connect(hp); hp.connect(g2); g2.connect(a.destination); src2.start(a.currentTime+0.05);
+  const a = ac();
+  const t0 = a.currentTime;
+
+  // ── Master limiter/compressor to glue all layers ──
+  const comp = a.createDynamicsCompressor();
+  comp.threshold.value = -6; comp.knee.value = 6;
+  comp.ratio.value = 4; comp.attack.value = 0.002; comp.release.value = 0.3;
+  comp.connect(a.destination);
+
+  // ── Layer 1: Deep sub kick — the gut-punch "BOOM" ──
+  // Pitched sine that drops from 80Hz to 18Hz over 1.5s
+  const sub = a.createOscillator(), subG = a.createGain();
+  sub.type = 'sine';
+  sub.frequency.setValueAtTime(80 + intensity*40, t0);
+  sub.frequency.exponentialRampToValueAtTime(18, t0 + 1.5);
+  subG.gain.setValueAtTime(0, t0);
+  subG.gain.linearRampToValueAtTime(1.4 + intensity*0.5, t0 + 0.01);
+  subG.gain.exponentialRampToValueAtTime(0.001, t0 + 2.2);
+  sub.connect(subG); subG.connect(comp);
+  sub.start(t0); sub.stop(t0 + 2.5);
+
+  // ── Layer 2: Mid body — the main explosion roar/rumble, ~3s long ──
+  const roarLen = Math.floor(a.sampleRate * 3.5);
+  const roarBuf = a.createBuffer(1, roarLen, a.sampleRate);
+  const rd = roarBuf.getChannelData(0);
+  // Shaped noise: sharp attack, long rumbling tail
+  for (let i = 0; i < roarLen; i++) {
+    const t = i / roarLen;
+    const env = t < 0.02
+      ? t / 0.02                          // fast attack
+      : Math.pow(1 - (t - 0.02) / 0.98, 1.6); // long curved decay
+    rd[i] = (Math.random()*2 - 1) * env;
+  }
+  const roarSrc = a.createBufferSource(); roarSrc.buffer = roarBuf;
+  const roarLP  = a.createBiquadFilter(); roarLP.type = 'lowpass';  roarLP.frequency.value = 800;
+  const roarHP  = a.createBiquadFilter(); roarHP.type = 'highpass'; roarHP.frequency.value = 40;
+  const roarPk  = a.createBiquadFilter(); roarPk.type = 'peaking';  roarPk.frequency.value = 150; roarPk.gain.value = 14;
+  const roarG   = a.createGain(); roarG.gain.setValueAtTime(1.2 + intensity*0.6, t0);
+  roarSrc.connect(roarHP); roarHP.connect(roarLP); roarLP.connect(roarPk); roarPk.connect(roarG);
+  roarG.connect(comp);
+  roarSrc.start(t0);
+
+  // ── Layer 3: Initial transient crack / shockwave ──
+  // Very short sharp noise burst right at impact for the percussive hit
+  const crackLen = Math.floor(a.sampleRate * 0.18);
+  const crackBuf = a.createBuffer(1, crackLen, a.sampleRate);
+  const cd = crackBuf.getChannelData(0);
+  for (let i = 0; i < crackLen; i++) cd[i] = (Math.random()*2-1) * Math.exp(-i/(crackLen*0.08));
+  const crackSrc = a.createBufferSource(); crackSrc.buffer = crackBuf;
+  const crackHP  = a.createBiquadFilter(); crackHP.type = 'highpass'; crackHP.frequency.value = 300;
+  const crackG   = a.createGain(); crackG.gain.value = 1.5 + intensity*0.8;
+  crackSrc.connect(crackHP); crackHP.connect(crackG); crackG.connect(comp);
+  crackSrc.start(t0);
+
+  // ── Layer 4: Debris rain — metallic clatter fading over 2s ──
+  const debLen = Math.floor(a.sampleRate * 2.2);
+  const debBuf = a.createBuffer(1, debLen, a.sampleRate);
+  const dd = debBuf.getChannelData(0);
+  for (let i = 0; i < debLen; i++) {
+    // Sparse clicks thinning out over time
+    const density = Math.pow(1 - i/debLen, 1.4);
+    dd[i] = (Math.random() > (1 - density * 0.12)) ? (Math.random()*2-1) * density : 0;
+  }
+  const debSrc = a.createBufferSource(); debSrc.buffer = debBuf;
+  const debHP  = a.createBiquadFilter(); debHP.type = 'highpass'; debHP.frequency.value = 1800;
+  const debLP  = a.createBiquadFilter(); debLP.type = 'lowpass';  debLP.frequency.value = 8000;
+  const debG   = a.createGain(); debG.gain.setValueAtTime(0.5 + intensity*0.3, t0 + 0.05);
+  debSrc.connect(debHP); debHP.connect(debLP); debLP.connect(debG); debG.connect(comp);
+  debSrc.start(t0 + 0.05);
+
+  // ── Layer 5: Low frequency rumble tail — the ground shake ──
+  // Slowly dying low oscillator simulating ground vibration
+  const rumLen = Math.floor(a.sampleRate * 2.8);
+  const rumBuf = a.createBuffer(1, rumLen, a.sampleRate);
+  const rmd = rumBuf.getChannelData(0);
+  for (let i = 0; i < rumLen; i++) {
+    const t = i / rumLen;
+    // Modulated low rumble
+    const env = Math.pow(1 - t, 2.0);
+    rmd[i] = (Math.random()*2-1) * env * (0.5 + 0.5*Math.sin(i * 0.08));
+  }
+  const rumSrc = a.createBufferSource(); rumSrc.buffer = rumBuf;
+  const rumLP  = a.createBiquadFilter(); rumLP.type = 'lowpass'; rumLP.frequency.value = 120;
+  const rumG   = a.createGain(); rumG.gain.setValueAtTime(0.8 + intensity*0.4, t0 + 0.1);
+  rumSrc.connect(rumLP); rumLP.connect(rumG); rumG.connect(comp);
+  rumSrc.start(t0 + 0.1);
+
+  // ── Layer 6: Cinematic "whoosh" air pressure wave ──
+  // A brief upward swoosh right after impact
+  const whoosh = a.createOscillator(), whooshG = a.createGain();
+  const whooshF = a.createBiquadFilter(); whooshF.type = 'bandpass'; whooshF.frequency.value = 300; whooshF.Q.value = 0.5;
+  whoosh.type = 'sawtooth';
+  whoosh.frequency.setValueAtTime(200, t0 + 0.02);
+  whoosh.frequency.exponentialRampToValueAtTime(60, t0 + 0.8);
+  whooshG.gain.setValueAtTime(0, t0 + 0.02);
+  whooshG.gain.linearRampToValueAtTime(0.35 + intensity*0.2, t0 + 0.06);
+  whooshG.gain.exponentialRampToValueAtTime(0.001, t0 + 0.9);
+  whoosh.connect(whooshF); whooshF.connect(whooshG); whooshG.connect(comp);
+  whoosh.start(t0 + 0.02); whoosh.stop(t0 + 1.0);
 }
 
 function sndEject() {
-  const a=ac(), o=a.createOscillator(), g=a.createGain();
-  o.type='square';
-  o.frequency.setValueAtTime(900,a.currentTime);
-  o.frequency.exponentialRampToValueAtTime(120,a.currentTime+0.22);
-  g.gain.setValueAtTime(0.38,a.currentTime); g.gain.exponentialRampToValueAtTime(0.001,a.currentTime+0.22);
-  o.connect(g); g.connect(a.destination); o.start(); o.stop(a.currentTime+0.22);
+  const a = ac(), t0 = a.currentTime;
+  // Soft rising whoosh — filtered noise sweep, sits gently under the explosion
+  const len = Math.floor(a.sampleRate * 0.6);
+  const buf = a.createBuffer(1, len, a.sampleRate);
+  const d   = buf.getChannelData(0);
+  for (let i = 0; i < len; i++) d[i] = (Math.random()*2-1) * Math.pow(i/len, 0.3) * Math.pow(1-i/len, 0.8);
+  const src = a.createBufferSource(); src.buffer = buf;
+  // Bandpass sweep upward — like something being launched
+  const bp  = a.createBiquadFilter(); bp.type = 'bandpass'; bp.Q.value = 1.2;
+  bp.frequency.setValueAtTime(200, t0);
+  bp.frequency.exponentialRampToValueAtTime(1800, t0 + 0.5);
+  const g = a.createGain();
+  g.gain.setValueAtTime(0, t0);
+  g.gain.linearRampToValueAtTime(0.22, t0 + 0.05);
+  g.gain.exponentialRampToValueAtTime(0.001, t0 + 0.6);
+  src.connect(bp); bp.connect(g); g.connect(a.destination);
+  src.start(t0);
 }
 
 function sndScream(intensity) {
@@ -512,7 +651,7 @@ function updateExploding(dt) {
     spawnDebris(rocket.x, rocket.y, rocket.vx, rocket.vy, crashIntensity);
     astronaut = spawnAstronaut(rocket.x, rocket.y-RH*0.3, rocket.vx, rocket.vy, crashIntensity);
     sndEject();
-    setTimeout(() => sndScream(crashIntensity), 90);
+    setTimeout(() => sndScream(crashIntensity), 500);
     STATE = 'crashed'; crashTimer = 0;
   }
 }
