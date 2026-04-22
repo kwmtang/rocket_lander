@@ -452,8 +452,8 @@ function updatePlaying(dt) {
 
   const rotL = K.KeyA || K.ArrowLeft;
   const rotR = K.KeyD || K.ArrowRight;
-  if (rotL) { rocket.av -= TRQ*dt; if(!K._rl){sndRotate();K._rl=true;} } else { K._rl=false; }
-  if (rotR) { rocket.av += TRQ*dt; if(!K._rr){sndRotate();K._rr=true;} } else { K._rr=false; }
+  if (rotL) { rocket.av -= TRQ*dt; } 
+  if (rotR) { rocket.av += TRQ*dt; }
 
   rocket.vy    += GRAV*dt;
   rocket.av    *= Math.pow(ADAMP, dt*60);
@@ -797,25 +797,28 @@ function drawRocket(r) {
   ctx.closePath();
   ctx.fill(); ctx.stroke();
 
-  // Nozzle bell at bottom
+  // Nozzle bell — fill covers the gap, then stroke only the 3 outer edges (not the top)
+  // so the shared edge with the body isn't drawn twice (which made it look thick).
+  ctx.fillStyle='#fff';
+  ctx.beginPath();
+  ctx.moveTo(-W2*0.65, H2-12);
+  ctx.lineTo(-W2*0.85, H2);
+  ctx.lineTo( W2*0.85, H2);
+  ctx.lineTo( W2*0.65, H2-12);
+  ctx.closePath();
+  ctx.fill();
+  // Stroke only the sides and bottom, not the top edge
   ctx.strokeStyle='#111'; ctx.lineWidth=1.8;
   ctx.beginPath();
-  ctx.moveTo(-W2*0.65, H2-10); ctx.lineTo(-W2*0.85, H2);
-  ctx.lineTo( W2*0.85, H2);   ctx.lineTo( W2*0.65, H2-10);
+  ctx.moveTo(-W2*0.65, H2-12);
+  ctx.lineTo(-W2*0.85, H2);
+  ctx.lineTo( W2*0.85, H2);
+  ctx.lineTo( W2*0.65, H2-12);
   ctx.stroke();
 
   // Porthole (near top/nose area)
   ctx.strokeStyle='#111'; ctx.lineWidth=1.5; ctx.fillStyle='#fff';
   ctx.beginPath(); ctx.arc(0,-H2+24,5,0,Math.PI*2); ctx.fill(); ctx.stroke();
-
-  // Happy face when landed
-  if(r.landed){
-    ctx.fillStyle='#111';
-    ctx.beginPath(); ctx.arc(-1.5,-H2+23,1.1,0,Math.PI*2); ctx.fill();
-    ctx.beginPath(); ctx.arc( 1.5,-H2+23,1.1,0,Math.PI*2); ctx.fill();
-    ctx.strokeStyle='#111'; ctx.lineWidth=1;
-    ctx.beginPath(); ctx.arc(0,-H2+24.5,2.5,0.1,Math.PI-0.1); ctx.stroke();
-  }
 
   ctx.restore();
 }
@@ -933,37 +936,58 @@ function drawHUD(gy) {
   const angOk=ad<SAFE_ANG;
   const allOk=vyOk&&vxOk&&angOk&&onPad;
 
-  ctx.textAlign='left';
+  // All labels padded to same length with monospace so values align at one column
   const rows=[
-    {lbl:'Vert speed:  ', val:rocket.vy.toFixed(1),            unit:' px/s', ok:vyOk,    hint:`< ${SAFE_VY}`},
-    {lbl:'Horiz speed: ', val:Math.abs(rocket.vx).toFixed(1),  unit:' px/s', ok:vxOk,    hint:`< ${SAFE_VX}`},
-    {lbl:'Total speed: ', val:spd.toFixed(1),                  unit:' px/s', ok:vyOk&&vxOk, hint:''},
-    {lbl:'Angle:       ', val:adDeg.toFixed(1),                unit:'°',     ok:angOk,   hint:'< 15°'},
-    {lbl:'Spin:        ', val:avDeg.toFixed(1),                unit:' °/s',  ok:Math.abs(avDeg)<55, hint:''},
-    {lbl:'Altitude:    ', val:alt.toFixed(0),                  unit:' px',   ok:true,    hint:''},
-    {lbl:'On pad:      ', val:onPad?'YES':'NO',                unit:'',      ok:onPad,   hint:''},
-    {lbl:'Safe to land:', val:allOk?' YES ✓':' NO ✗',         unit:'',      ok:allOk,   hint:''},
+    {lbl:'Vertical speed:  ', val:rocket.vy.toFixed(1),           unit:' px/s', ok:vyOk,          hint:`< ${SAFE_VY}`},
+    {lbl:'Horizontal speed:', val:Math.abs(rocket.vx).toFixed(1), unit:' px/s', ok:vxOk,          hint:`< ${SAFE_VX}`},
+    {lbl:'Total speed:     ', val:spd.toFixed(1),                 unit:' px/s', ok:vyOk&&vxOk,    hint:''},
+    {lbl:'Angle:           ', val:adDeg.toFixed(1),               unit:'°',     ok:angOk,         hint:'< 15°'},
+    {lbl:'Spin rate:       ', val:avDeg.toFixed(1),               unit:' °/s',  ok:Math.abs(avDeg)<55, hint:''},
+    {lbl:'Altitude:        ', val:alt.toFixed(0),                 unit:' px',   ok:true,          hint:''},
+    {lbl:'On pad:          ', val:onPad?'YES':'NO',               unit:'',      ok:onPad,         hint:''},
+    {lbl:'Safe to land:    ', val:allOk?'YES ✓':'NO ✗',          unit:'',      ok:allOk,         hint:''},
   ];
 
-  const lh=17, sx=10, sy=18;
+  const lh=18, sx=10, sy=20;
+  // Measure the widest label once to get a fixed value column
   ctx.font='13px monospace';
+  const labelCol = sx + ctx.measureText('Horizontal speed:').width + 6;
+
+  // First pass: draw background strip covering full width
+  const hintFont='11px monospace';
+  ctx.font='13px monospace';
+  // Measure total row width to draw a single bg rect
   rows.forEach((row,i)=>{
     const y=sy+i*lh;
-    const full=row.lbl+row.val+row.unit+(row.hint?'  ('+row.hint+')':'');
-    const w=ctx.measureText(full).width+12;
+    ctx.font='bold 13px monospace';
+    const valW=ctx.measureText(row.val+row.unit).width;
+    ctx.font=hintFont;
+    const hintW=row.hint ? ctx.measureText('  ('+row.hint+')').width : 0;
+    const totalW=labelCol + valW + hintW + 6;
     ctx.fillStyle='rgba(255,255,255,0.82)';
-    ctx.fillRect(sx-2,y-13,w,15);
-    ctx.fillStyle='#777'; ctx.font='13px monospace';
-    ctx.fillText(row.lbl,sx,y);
-    const lw=ctx.measureText(row.lbl).width;
-    ctx.fillStyle=row.ok?'#070':'#c00'; ctx.font='bold 13px monospace';
-    ctx.fillText(row.val+row.unit,sx+lw,y);
+    ctx.fillRect(sx-2, y-14, totalW, 17);
+  });
+
+  // Second pass: draw text
+  rows.forEach((row,i)=>{
+    const y=sy+i*lh;
+    // Label in black
+    ctx.font='13px monospace';
+    ctx.fillStyle='#111';
+    ctx.textAlign='left';
+    ctx.fillText(row.lbl, sx, y);
+    // Value at fixed column, colored by safety
+    ctx.font='bold 13px monospace';
+    ctx.fillStyle=row.ok?'#070':'#c00';
+    ctx.fillText(row.val+row.unit, labelCol, y);
+    // Hint after value
     if(row.hint){
       const vw=ctx.measureText(row.val+row.unit).width;
-      ctx.fillStyle='#aaa'; ctx.font='11px monospace';
-      ctx.fillText('  ('+row.hint+')',sx+lw+vw,y);
+      ctx.font=hintFont; ctx.fillStyle='#aaa';
+      ctx.fillText('  ('+row.hint+')', labelCol+vw, y);
     }
   });
+  ctx.font='13px monospace';
 }
 
 // ── drawOverlays ──
@@ -998,9 +1022,11 @@ function drawOverlays() {
     ctx.font='bold 20px monospace'; ctx.fillStyle=clr;
     ctx.fillText(lbl+'  ·  Score: '+lastScore+'/100',W/2,H/2+13);
     ctx.globalAlpha=1;
-    if(landedTimer>1.5){
+    // Only show restart prompt after walker has completed first jump and landed back down
+    const walkerReady = celebWalk && celebWalk.jumpCount >= 1 && celebWalk.onGround;
+    if(walkerReady){
       const blink=Math.sin(landedTimer*3)>0?1:0.3;
-      ctx.globalAlpha=Math.min(1,(landedTimer-1.5)*2)*blink;
+      ctx.globalAlpha=Math.min(1,landedTimer)*blink;
       ctx.font='15px monospace'; ctx.fillStyle='#333';
       ctx.fillText('— PRESS ANY KEY TO PLAY AGAIN —',W/2,H-45);
       ctx.globalAlpha=1;
@@ -1048,7 +1074,10 @@ addEventListener('keydown', e => {
     return;
   }
 
-  if(STATE==='landed'){ doRestart(); return; }
+  if(STATE==='landed'){
+    const walkerReady = celebWalk && celebWalk.jumpCount >= 1 && celebWalk.onGround;
+    if(walkerReady){ doRestart(); return; }
+  }
   // On crash: only allow restart once the astronaut has splated (or after 1.5s fallback)
   if(STATE==='crashed'){
     const canRestart = crashTimer > 1.5 && (astronaut ? astronaut.grounded : true);
@@ -1063,7 +1092,10 @@ addEventListener('touchstart', e=>{
     resetAll(); STATE='playing'; lastT=performance.now();
     return;
   }
-  if(STATE==='landed'){ doRestart(); return; }
+  if(STATE==='landed'){
+    const walkerReady = celebWalk && celebWalk.jumpCount >= 1 && celebWalk.onGround;
+    if(walkerReady){ doRestart(); return; }
+  }
   if(STATE==='crashed'){
     const canRestart = crashTimer > 1.5 && (astronaut ? astronaut.grounded : true);
     if(canRestart){ doRestart(); return; }
