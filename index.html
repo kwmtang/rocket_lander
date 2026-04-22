@@ -1,0 +1,1082 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Rocket Lander</title>
+<style>
+* { margin:0; padding:0; box-sizing:border-box; }
+body { background:#fff; overflow:hidden; }
+canvas { display:block; }
+#overlay {
+  position:fixed; inset:0; display:flex; align-items:center;
+  justify-content:center; pointer-events:none;
+}
+#menu {
+  font-family:'Courier New',monospace; color:#111; text-align:center;
+  background:rgba(255,255,255,0.96); border:2px solid #111;
+  padding:2.4rem 3.2rem; pointer-events:auto;
+}
+#menu h1 { font-size:2.8rem; letter-spacing:.3em; text-transform:uppercase; margin-bottom:.3rem; }
+#menu .sub { font-size:.75rem; opacity:.45; letter-spacing:.12em; text-transform:uppercase; margin-bottom:1rem; }
+#menu .desc { font-size:.85rem; line-height:2; opacity:.65; margin-bottom:1rem; }
+#menu .ctrls { font-size:.88rem; line-height:2.6; }
+#menu .k { display:inline-block; border:1.5px solid #111; padding:1px 7px; font-weight:bold; margin:0 2px; font-size:.85rem; }
+#menu .tips { font-size:.72rem; opacity:.4; margin-top:.8rem; line-height:1.9; }
+#menu .go { margin-top:1.3rem; font-size:.95rem; font-weight:bold; letter-spacing:.15em; animation:blink 1.2s step-end infinite; }
+@keyframes blink { 50%{opacity:0} }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="overlay">
+  <div id="menu">
+    <h1>Rocket Lander</h1>
+    <div class="sub">precision landing simulator</div>
+    <div class="desc">Land upright and softly on the pad.<br>Too fast · Too tilted · Off-target = 💥</div>
+    <div class="ctrls">
+      <div><span class="k">S</span> or <span class="k">Space</span> or <span class="k">↑</span> &nbsp;— Main Engine</div>
+      <div><span class="k">A</span> or <span class="k">←</span> &nbsp;Rotate Left &nbsp;&nbsp; <span class="k">D</span> or <span class="k">→</span> &nbsp;Rotate Right</div>
+      <div><span class="k">Esc</span> &nbsp;— Return to menu</div>
+    </div>
+    <div class="tips">Safe: angle &lt;15° · vert speed &lt;80 · horiz speed &lt;60<br>HUD values go green when safe to land</div>
+    <div class="go">— PRESS ANY KEY TO LAUNCH —</div>
+  </div>
+</div>
+
+<script>
+"use strict";
+// ═══════════════════════════════════════════
+//  ROCKET LANDER  v3 — clean rewrite
+// ═══════════════════════════════════════════
+
+const canvas  = document.getElementById('c');
+const ctx     = canvas.getContext('2d');
+const menuEl  = document.getElementById('menu');
+const overlay = document.getElementById('overlay');
+
+// ── resize ──
+function resize() { canvas.width = innerWidth; canvas.height = innerHeight; }
+resize();
+addEventListener('resize', resize);
+
+// ══════════════════════════════════════════
+//  AUDIO
+// ══════════════════════════════════════════
+let AC = null;
+function ac() {
+  if (!AC) AC = new (window.AudioContext || window.webkitAudioContext)();
+  if (AC.state === 'suspended') AC.resume();
+  return AC;
+}
+
+// Engine (looping noise)
+let engNode = null, engGain = null;
+function engineStart() {
+  if (engNode) return;
+  const a = ac();
+  engGain = a.createGain(); engGain.gain.value = 0; engGain.connect(a.destination);
+  const len = a.sampleRate * 2;
+  const buf = a.createBuffer(1, len, a.sampleRate);
+  const d = buf.getChannelData(0);
+  for (let i = 0; i < len; i++) d[i] = (Math.random()*2-1)*0.4;
+  engNode = a.createBufferSource(); engNode.buffer = buf; engNode.loop = true;
+  const lp = a.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 130;
+  engNode.connect(lp); lp.connect(engGain); engNode.start();
+}
+function engineVol(v) { if(engGain) engGain.gain.linearRampToValueAtTime(v*0.44, ac().currentTime+0.03); }
+function engineStop() { if(!engNode) return; try{engNode.stop()}catch(e){} engNode=null; engGain=null; }
+
+function sndRotate() {
+  const a=ac(), o=a.createOscillator(), g=a.createGain();
+  o.type='sawtooth'; o.frequency.value=260;
+  g.gain.setValueAtTime(0.07,a.currentTime); g.gain.exponentialRampToValueAtTime(0.001,a.currentTime+0.06);
+  o.connect(g); g.connect(a.destination); o.start(); o.stop(a.currentTime+0.06);
+}
+
+function sndExplosion(intensity) {
+  const a=ac();
+  // Low boom
+  const len=Math.floor(a.sampleRate*0.6);
+  const buf=a.createBuffer(1,len,a.sampleRate);
+  const d=buf.getChannelData(0);
+  for(let i=0;i<len;i++) d[i]=(Math.random()*2-1)*Math.exp(-i/(len*0.18));
+  const src=a.createBufferSource(); src.buffer=buf;
+  const lp=a.createBiquadFilter(); lp.type='lowpass'; lp.frequency.value=400;
+  const g=a.createGain(); g.gain.setValueAtTime(0.7+intensity*0.4, a.currentTime);
+  src.connect(lp); lp.connect(g); g.connect(a.destination); src.start();
+  // Crackle layer
+  const len2=Math.floor(a.sampleRate*0.4);
+  const buf2=a.createBuffer(1,len2,a.sampleRate);
+  const d2=buf2.getChannelData(0);
+  for(let i=0;i<len2;i++) d2[i]=(Math.random()*2-1)*Math.exp(-i/(len2*0.12));
+  const src2=a.createBufferSource(); src2.buffer=buf2;
+  const hp=a.createBiquadFilter(); hp.type='highpass'; hp.frequency.value=800;
+  const g2=a.createGain(); g2.gain.setValueAtTime(0.5+intensity*0.3, a.currentTime+0.05);
+  src2.connect(hp); hp.connect(g2); g2.connect(a.destination); src2.start(a.currentTime+0.05);
+}
+
+function sndEject() {
+  const a=ac(), o=a.createOscillator(), g=a.createGain();
+  o.type='square';
+  o.frequency.setValueAtTime(900,a.currentTime);
+  o.frequency.exponentialRampToValueAtTime(120,a.currentTime+0.22);
+  g.gain.setValueAtTime(0.38,a.currentTime); g.gain.exponentialRampToValueAtTime(0.001,a.currentTime+0.22);
+  o.connect(g); g.connect(a.destination); o.start(); o.stop(a.currentTime+0.22);
+}
+
+function sndScream(intensity) {
+  const a=ac(), o=a.createOscillator(), lfo=a.createOscillator();
+  const lg=a.createGain(), g=a.createGain();
+  o.type='sawtooth';
+  o.frequency.setValueAtTime(250,a.currentTime);
+  o.frequency.linearRampToValueAtTime(600+intensity*700,a.currentTime+0.7+intensity*0.5);
+  lfo.type='sine'; lfo.frequency.value=5+intensity*10;
+  lg.gain.value=15+intensity*45;
+  lfo.connect(lg); lg.connect(o.frequency);
+  const dur=1.0+intensity*0.6;
+  g.gain.setValueAtTime(0.16,a.currentTime); g.gain.exponentialRampToValueAtTime(0.001,a.currentTime+dur);
+  o.connect(g); g.connect(a.destination);
+  o.start(); lfo.start(); o.stop(a.currentTime+dur); lfo.stop(a.currentTime+dur);
+}
+
+function sndSplat() {
+  const a=ac(), o=a.createOscillator(), g=a.createGain();
+  o.type='sine';
+  o.frequency.setValueAtTime(230,a.currentTime); o.frequency.exponentialRampToValueAtTime(45,a.currentTime+0.22);
+  g.gain.setValueAtTime(0.65,a.currentTime); g.gain.exponentialRampToValueAtTime(0.001,a.currentTime+0.28);
+  o.connect(g); g.connect(a.destination); o.start(); o.stop(a.currentTime+0.28);
+}
+
+function sndLanding() {
+  const a=ac();
+  [261,329,392].forEach((f,i)=>{
+    const o=a.createOscillator(), g=a.createGain();
+    const del=a.createDelay(); del.delayTime.value=0.15;
+    const fb=a.createGain(); fb.gain.value=0.3;
+    o.type='sine'; o.frequency.value=f;
+    const t=a.currentTime+i*0.05;
+    g.gain.setValueAtTime(0,t); g.gain.linearRampToValueAtTime(0.27,t+0.05); g.gain.exponentialRampToValueAtTime(0.001,t+2.2);
+    o.connect(g); g.connect(a.destination); g.connect(del); del.connect(fb); fb.connect(del); del.connect(a.destination);
+    o.start(t); o.stop(t+2.5);
+  });
+  for(let i=0;i<8;i++){
+    const o=a.createOscillator(), g=a.createGain();
+    const f=900+Math.random()*1200, t=a.currentTime+Math.random()*0.9;
+    o.type='sine'; o.frequency.value=f;
+    g.gain.setValueAtTime(0.06,t); g.gain.exponentialRampToValueAtTime(0.001,t+0.35);
+    o.connect(g); g.connect(a.destination); o.start(t); o.stop(t+0.35);
+  }
+}
+
+function sndJingle() {
+  const a=ac();
+  [523,659,784,1047,784,1047,1319].forEach((f,i)=>{
+    const o=a.createOscillator(), g=a.createGain();
+    o.type=i%2===0?'sine':'triangle'; o.frequency.value=f;
+    const t=a.currentTime+i*0.11;
+    g.gain.setValueAtTime(0,t); g.gain.linearRampToValueAtTime(0.13,t+0.03); g.gain.exponentialRampToValueAtTime(0.001,t+0.45);
+    o.connect(g); g.connect(a.destination); o.start(t); o.stop(t+0.5);
+  });
+}
+
+// ══════════════════════════════════════════
+//  INPUT
+// ══════════════════════════════════════════
+const K = {};
+addEventListener('keydown', e => {
+  K[e.code] = true;
+  // Prevent arrow keys / space from scrolling the page
+  if(['Space','ArrowUp','ArrowDown','ArrowLeft','ArrowRight'].includes(e.code)) e.preventDefault();
+});
+addEventListener('keyup',   e => { K[e.code] = false; });
+function thrust() { return !!(K.KeyS || K.Space || K.ArrowUp); }
+
+// ══════════════════════════════════════════
+//  CONSTANTS
+// ══════════════════════════════════════════
+const GRAV      = 120;   // px/s²
+const THR       = 265;   // px/s²
+const TRQ       = 3.3;   // rad/s²
+const ADAMP     = 0.92;
+const PAD_W     = 100;
+const SAFE_VY   = 80;
+const SAFE_VX   = 60;
+const SAFE_ANG  = 15 * Math.PI / 180;
+const GND_FRAC  = 0.88;
+const RH        = 52;    // rocket height
+const RW        = 14;    // rocket width
+
+// ══════════════════════════════════════════
+//  GAME STATE
+// ══════════════════════════════════════════
+// States: 'menu' | 'playing' | 'exploding' | 'crashed' | 'landing_freeze' | 'landed'
+let STATE = 'menu';
+
+let rocket    = null;
+let flamePtcl = [];   // engine exhaust particles
+let expPtcl   = [];   // explosion fire particles
+let debris    = [];
+let fireworks = [];
+let astronaut = null;
+let splatDone = false;
+let celebWalk = null;
+
+let crashReasons  = [];
+let crashMsgTimer = 0;
+let crashTimer    = 0;
+let crashIntensity= 0;
+
+let landFreeze    = 0;   // counts down before land sequence
+let landedTimer   = 0;   // counts up after landing
+let lastScore     = 0;
+
+let fwTimer  = 0;        // firework spawn timer
+let camX = 0, camY = 0;
+let lastT = 0;
+
+function GY()  { return canvas.height * GND_FRAC; }
+function PAD() { return canvas.width  / 2; }
+
+// ══════════════════════════════════════════
+//  INIT
+// ══════════════════════════════════════════
+function newRocket() {
+  // Start angle: biased near upright, ±50°
+  const ang = (Math.random()-0.5) * (2*Math.PI*5/18);
+  return {
+    x: canvas.width  * (0.15 + Math.random()*0.7),
+    y: canvas.height * 0.08,
+    vx: (Math.random()-0.5)*45,
+    vy: 14 + Math.random()*18,
+    angle: ang, av: (Math.random()-0.5)*1.2,
+    dead: false, landed: false, flamePhase: 0,
+  };
+}
+
+function resetAll() {
+  engineStop();
+  rocket     = newRocket();
+  flamePtcl  = []; expPtcl = []; debris = []; fireworks = [];
+  astronaut  = null; splatDone = false; celebWalk = null;
+  crashReasons = []; crashMsgTimer = 0; crashTimer = 0; crashIntensity = 0;
+  landFreeze = 0; landedTimer = 0; lastScore = 0;
+  fwTimer = 0; camX = 0; camY = 0;
+}
+
+// ══════════════════════════════════════════
+//  HELPERS: nozzle & exhaust direction
+// ══════════════════════════════════════════
+// Canvas rotate(a) maps local(lx,ly) to world:
+//   wx = cx + lx*cos(a) - ly*sin(a)
+//   wy = cy + lx*sin(a) + ly*cos(a)
+//
+// Rocket local coords: nose = (0,-RH/2), nozzle = (0,+RH/2)
+// Nozzle world pos: cx - (RH/2)*sin(a), cy + (RH/2)*cos(a)
+// Exhaust shoots in local +Y direction in world: (-sin(a), cos(a))
+// Thrust direction (nose = local -Y in world): (+sin(a), -cos(a))
+
+function nozzlePos(r) {
+  const h = RH/2 + 5;
+  return { x: r.x - h*Math.sin(r.angle), y: r.y + h*Math.cos(r.angle) };
+}
+
+function angleDiff(a) {
+  const n = ((a % (Math.PI*2)) + Math.PI*2) % (Math.PI*2);
+  return Math.min(n, Math.PI*2 - n);
+}
+function isSafe(r) {
+  const pad = PAD(), ad = angleDiff(r.angle);
+  return r.vy>0 && r.vy<SAFE_VY && Math.abs(r.vx)<SAFE_VX && ad<SAFE_ANG
+      && r.x>pad-PAD_W/2 && r.x<pad+PAD_W/2;
+}
+function getCrashReasons(r) {
+  const pad = PAD(), ad = angleDiff(r.angle);
+  const spd = Math.hypot(r.vx, r.vy);
+  const out = [];
+  if (r.vy >= SAFE_VY || spd > SAFE_VY*1.2) out.push('Too fast!');
+  if (ad >= SAFE_ANG) out.push('Too tilted!');
+  if (r.x < pad-PAD_W/2 || r.x > pad+PAD_W/2) out.push('Missed the pad!');
+  if (!out.length) out.push('Too fast!');
+  return out;
+}
+function crashIntens(r) {
+  const spd = Math.hypot(r.vx, r.vy);
+  const ad  = angleDiff(r.angle);
+  return Math.min(1, spd/400*0.7 + ad/Math.PI*0.3);
+}
+function score(r) {
+  const ad = angleDiff(r.angle), spd = Math.hypot(r.vx,r.vy), dist = Math.abs(r.x-PAD());
+  const maxS = Math.hypot(SAFE_VX, SAFE_VY);
+  const aP = 1 - ad/SAFE_ANG, sP = 1 - spd/maxS, dP = 1 - dist/(PAD_W/2);
+  return Math.max(0, Math.round((aP*.35 + sP*.45 + dP*.2)*100));
+}
+
+// ── Particles ──
+function spawnFlamePtcl(r, intensity) {
+  const noz = nozzlePos(r);
+  for (let i = 0; i < 3 + Math.floor(intensity*4); i++) {
+    const sp = (Math.random()-0.5)*0.55, a2 = r.angle+sp;
+    const spd = 85 + Math.random()*125*intensity;
+    flamePtcl.push({
+      x: noz.x+(Math.random()-.5)*5, y: noz.y+(Math.random()-.5)*5,
+      vx: -Math.sin(a2)*spd + r.vx*0.12,
+      vy:  Math.cos(a2)*spd + r.vy*0.12,
+      life: 0.18+Math.random()*0.16, maxLife:0,
+      g: Math.floor(70+Math.random()*150), size: 3+Math.random()*5.5,
+    });
+    flamePtcl[flamePtcl.length-1].maxLife = flamePtcl[flamePtcl.length-1].life;
+  }
+}
+
+function spawnExplosion(x, y, vx, vy, intensity) {
+  // Many fire/smoke particles bursting outward
+  const count = 40 + Math.floor(intensity*40);
+  for (let i = 0; i < count; i++) {
+    const ang = Math.random()*Math.PI*2;
+    const spd = 30 + Math.random()*280*(0.5+intensity*0.8);
+    const isSmoke = Math.random() < 0.3;
+    expPtcl.push({
+      x: x+(Math.random()-.5)*20, y: y+(Math.random()-.5)*20,
+      vx: vx*0.2 + Math.cos(ang)*spd, vy: vy*0.1 + Math.sin(ang)*spd - intensity*60,
+      life: isSmoke ? 0.8+Math.random()*0.5 : 0.3+Math.random()*0.35,
+      maxLife: 0,
+      size: isSmoke ? 12+Math.random()*22 : 4+Math.random()*14,
+      smoke: isSmoke,
+      g: isSmoke ? 0 : Math.floor(80+Math.random()*160),
+    });
+    expPtcl[expPtcl.length-1].maxLife = expPtcl[expPtcl.length-1].life;
+  }
+  // Also spawn a few bright flash particles
+  for (let i = 0; i < 12; i++) {
+    const ang = Math.random()*Math.PI*2, spd = 20+Math.random()*80;
+    expPtcl.push({
+      x, y,
+      vx: Math.cos(ang)*spd, vy: Math.sin(ang)*spd,
+      life: 0.1+Math.random()*0.12, maxLife: 0,
+      size: 8+Math.random()*18, smoke: false, flash: true, g: 220,
+    });
+    expPtcl[expPtcl.length-1].maxLife = expPtcl[expPtcl.length-1].life;
+  }
+}
+
+function spawnDebris(x, y, vx, vy, intensity) {
+  const count = 12 + Math.floor(intensity*10);
+  for (let i = 0; i < count; i++) {
+    const ang = Math.random()*Math.PI*2;
+    const spd = (55+Math.random()*170)*(0.7+intensity*0.8);
+    debris.push({
+      x, y,
+      vx: vx*0.35+Math.cos(ang)*spd, vy: vy*0.25+Math.sin(ang)*spd-intensity*40,
+      av: (Math.random()-.5)*(7+intensity*11),
+      angle: Math.random()*Math.PI*2,
+      len: 5+Math.random()*22,
+      life: 1.0+Math.random()*0.9, maxLife:0,
+    });
+    debris[debris.length-1].maxLife = debris[debris.length-1].life;
+  }
+}
+
+function spawnAstronaut(x, y, vx, vy, intensity) {
+  // Keep ejection in a narrow band so astronaut always lands on screen.
+  // Min intensity gives a gentle lob; max gives a dramatic arc — but both land visibly.
+  const side = Math.random() > 0.5 ? 1 : -1;
+  // Horizontal: 60–140 px/s range (narrow band, scales slightly with intensity)
+  const hb   = side * (60 + intensity * 80);
+  // Vertical: -120 to -200 px/s (enough for a visible arc, not off-screen)
+  const vy0  = -(120 + intensity * 80) - Math.random() * 40;
+  // Spin: gentle at low intensity, snappy at high — but always readable
+  const spin = side * (2 + intensity * 8) * (0.7 + Math.random() * 0.6);
+  return {
+    x, y,
+    vx: vx * 0.05 + hb,
+    vy: vy0,
+    av: spin, angle: 0,
+    grounded: false, splatTime: 0, finalAngle: 0, splatBlobs: [],
+    screamTimer: 0.9 + intensity * 0.5, screamMax: 0.9 + intensity * 0.5, intensity,
+  };
+}
+
+function spawnFirework(x, y) {
+  const pals=[['#e63','#f90','#fc0'],['#111','#444'],['#e22','#f55'],['#ffd700','#fff']];
+  const pal = pals[Math.floor(Math.random()*pals.length)];
+  const pts = [], count = 22+Math.floor(Math.random()*20);
+  for (let i=0;i<count;i++) {
+    const ang=(i/count)*Math.PI*2+(Math.random()-.5)*.3, spd=50+Math.random()*115;
+    pts.push({ x,y, vx:Math.cos(ang)*spd, vy:Math.sin(ang)*spd,
+      life:0.7+Math.random()*.65, maxLife:0, color:pal[Math.floor(Math.random()*pal.length)] });
+    pts[pts.length-1].maxLife = pts[pts.length-1].life;
+  }
+  return { pts };
+}
+
+// ══════════════════════════════════════════
+//  UPDATE LOOP
+// ══════════════════════════════════════════
+function loop(ts) {
+  requestAnimationFrame(loop);
+  if (STATE === 'menu') { draw(); return; }
+
+  const dt = Math.min((ts - lastT) / 1000, 0.033);
+  lastT = ts;
+
+  switch(STATE) {
+    case 'playing':      updatePlaying(dt);   break;
+    case 'exploding':    updateExploding(dt); break;
+    case 'crashed':      updateCrashed(dt);   break;
+    case 'landing_freeze': updateLandFreeze(dt); break;
+    case 'landed':       updateLanded(dt);    break;
+  }
+
+  // Camera: micro-follow velocity
+  if (rocket && !rocket.dead && !rocket.landed) {
+    camX += (rocket.vx*0.11 - camX)*0.06;
+    camY += (rocket.vy*0.06 - camY)*0.06;
+  } else {
+    camX += (0-camX)*0.05; camY += (0-camY)*0.05;
+  }
+
+  draw();
+}
+requestAnimationFrame(loop);
+
+// ── updatePlaying ──
+function updatePlaying(dt) {
+  // Thrust: pushes in nose direction = local -Y = world (sin(a), -cos(a))
+  if (thrust()) {
+    engineStart(); engineVol(1);
+    rocket.vx +=  Math.sin(rocket.angle)*THR*dt;
+    rocket.vy += -Math.cos(rocket.angle)*THR*dt;
+    spawnFlamePtcl(rocket, 1);
+    rocket.flamePhase += dt*22;
+  } else { engineVol(0); }
+
+  const rotL = K.KeyA || K.ArrowLeft;
+  const rotR = K.KeyD || K.ArrowRight;
+  if (rotL) { rocket.av -= TRQ*dt; if(!K._rl){sndRotate();K._rl=true;} } else { K._rl=false; }
+  if (rotR) { rocket.av += TRQ*dt; if(!K._rr){sndRotate();K._rr=true;} } else { K._rr=false; }
+
+  rocket.vy    += GRAV*dt;
+  rocket.av    *= Math.pow(ADAMP, dt*60);
+  rocket.x     += rocket.vx*dt;
+  rocket.y     += rocket.vy*dt;
+  rocket.angle += rocket.av*dt;
+
+  if (rocket.x < 0)           { rocket.x=0;            rocket.vx= Math.abs(rocket.vx)*0.3; }
+  if (rocket.x > canvas.width){ rocket.x=canvas.width;  rocket.vx=-Math.abs(rocket.vx)*0.3; }
+  if (rocket.y < 0)           { rocket.y=0;             rocket.vy= Math.abs(rocket.vy)*0.3; }
+
+  if (rocket.y >= GY()) {
+    rocket.y = GY();
+    engineStop();
+    if (isSafe(rocket)) {
+      rocket.landed = true; lastScore = score(rocket);
+      STATE = 'landing_freeze'; landFreeze = 0.32;
+    } else {
+      crashIntensity = crashIntens(rocket);
+      crashReasons   = getCrashReasons(rocket);
+      crashMsgTimer  = 2.5;
+      rocket.dead    = true;
+      // EXPLOSION first, then debris + astronaut after delay
+      spawnExplosion(rocket.x, rocket.y, rocket.vx, rocket.vy, crashIntensity);
+      sndExplosion(crashIntensity);
+      STATE = 'exploding';
+      crashTimer = 0;
+    }
+  }
+  tickFlamePtcl(dt);
+}
+
+// ── updateExploding ── (0.5s of explosion before breaking up)
+let explodeTimer = 0;
+function updateExploding(dt) {
+  explodeTimer += dt;
+  crashMsgTimer -= dt;
+  tickExpPtcl(dt);
+  tickFlamePtcl(dt);
+
+  // Keep adding more fire during explosion
+  if (explodeTimer < 0.45) {
+    for (let i=0;i<3;i++) {
+      const ax = rocket.x+(Math.random()-.5)*30, ay = rocket.y+(Math.random()-.5)*20;
+      expPtcl.push({
+        x:ax, y:ay, vx:(Math.random()-.5)*60, vy:-30-Math.random()*80,
+        life:0.25+Math.random()*0.2, maxLife:0,
+        size:6+Math.random()*16, smoke:false, g:100+Math.floor(Math.random()*140),
+      });
+      expPtcl[expPtcl.length-1].maxLife = expPtcl[expPtcl.length-1].life;
+    }
+  }
+
+  if (explodeTimer >= 0.5) {
+    explodeTimer = 0;
+    spawnDebris(rocket.x, rocket.y, rocket.vx, rocket.vy, crashIntensity);
+    astronaut = spawnAstronaut(rocket.x, rocket.y-RH*0.3, rocket.vx, rocket.vy, crashIntensity);
+    sndEject();
+    setTimeout(() => sndScream(crashIntensity), 90);
+    STATE = 'crashed'; crashTimer = 0;
+  }
+}
+
+// ── updateCrashed ──
+function updateCrashed(dt) {
+  crashMsgTimer -= dt;
+  crashTimer    += dt;
+  const gy = GY();
+
+  for (const p of debris) {
+    p.vy += GRAV*dt; p.x+=p.vx*dt; p.y+=p.vy*dt; p.angle+=p.av*dt; p.life-=dt;
+    if(p.y>gy){p.y=gy;p.vy*=-0.2;p.vx*=0.8;}
+  }
+  debris = debris.filter(p=>p.life>0);
+
+  if (astronaut && !astronaut.grounded) {
+    astronaut.vy += GRAV*dt;
+    astronaut.x  += astronaut.vx*dt; astronaut.y += astronaut.vy*dt;
+    astronaut.angle += astronaut.av*dt;
+    astronaut.screamTimer -= dt;
+    // Soft clamp to screen edges (gentle bounce rather than wrap)
+    if (astronaut.x < 20)              { astronaut.x = 20;              astronaut.vx =  Math.abs(astronaut.vx)*0.4; }
+    if (astronaut.x > canvas.width-20) { astronaut.x = canvas.width-20; astronaut.vx = -Math.abs(astronaut.vx)*0.4; }
+    if (astronaut.y >= gy) {
+      astronaut.y = gy; astronaut.grounded = true;
+      astronaut.finalAngle = astronaut.angle;
+      const bc = 6+Math.floor(astronaut.intensity*10);
+      for(let i=0;i<bc;i++){
+        const ba=Math.random()*Math.PI*2, bd=6+Math.random()*22*(1+astronaut.intensity*0.8);
+        astronaut.splatBlobs.push({
+          x:Math.cos(ba)*bd, y:Math.sin(ba)*bd*0.3,
+          r:3.5+Math.random()*9*(1+astronaut.intensity*0.5),
+        });
+      }
+      splatDone=true; sndSplat();
+    }
+  } else if (astronaut?.grounded) {
+    astronaut.splatTime += dt;
+  }
+
+  tickExpPtcl(dt); tickFlamePtcl(dt);
+  // No auto-restart — wait for key press (see keydown handler)
+}
+
+// ── updateLandFreeze ──
+function updateLandFreeze(dt) {
+  landFreeze -= dt;
+  tickFlamePtcl(dt);
+  if (landFreeze <= 0) {
+    STATE = 'landed'; landedTimer = 0;
+    sndLanding();
+    // Walker exits after delay
+    setTimeout(()=>{
+      if(STATE!=='landed')return;
+      const gy=GY();
+      celebWalk = {
+        x:rocket.x, y:gy, targetX:rocket.x+(Math.random()>.5?65:-65),
+        speed:55, phase:0, stage:0, jumpVy:0, jumpY:gy, onGround:true, jumpCount:0, stageTimer:0,
+      };
+    },700);
+  }
+}
+
+// ── updateLanded ──
+function updateLanded(dt) {
+  landedTimer += dt;
+  fwTimer     += dt;
+
+  // Continuous fireworks
+  if (fwTimer > 0.32) {
+    fwTimer = 0;
+    const pad=PAD(), gy=GY();
+    fireworks.push(spawnFirework(pad+(Math.random()-.5)*260, gy-50-Math.random()*250));
+  }
+
+  for(const fw of fireworks){
+    for(const p of fw.pts){
+      p.vy+=GRAV*0.33*dt; p.x+=p.vx*dt; p.y+=p.vy*dt; p.life-=dt;
+    }
+    fw.pts=fw.pts.filter(p=>p.life>0);
+  }
+  fireworks=fireworks.filter(fw=>fw.pts.length>0);
+
+  if(celebWalk){
+    const cw=celebWalk; cw.phase+=dt*9; cw.stageTimer+=dt;
+    const gy=GY();
+    if(cw.stage===0){
+      const dx=cw.targetX-cw.x;
+      if(Math.abs(dx)>2) cw.x+=Math.sign(dx)*cw.speed*dt;
+      else { cw.x=cw.targetX; cw.stage=1; cw.stageTimer=0; }
+    } else if(cw.stage===1){
+      if(cw.stageTimer>.25){ cw.stage=2; cw.stageTimer=0; sndJingle(); }
+    } else if(cw.stage===2){
+      if(cw.onGround && cw.jumpCount<3){ cw.jumpVy=-(100+cw.jumpCount*10); cw.onGround=false; cw.jumpCount++; }
+      if(!cw.onGround){
+        cw.jumpVy+=GRAV*dt; cw.jumpY+=cw.jumpVy*dt;
+        if(cw.jumpY>=gy){ cw.jumpY=gy; cw.onGround=true; if(cw.jumpCount>=3){cw.stage=3;cw.stageTimer=0;} }
+      }
+      cw.y=cw.jumpY;
+    }
+  }
+
+  tickFlamePtcl(dt);
+  // No auto-restart
+}
+
+function tickFlamePtcl(dt) {
+  for(const p of flamePtcl){ p.x+=p.vx*dt; p.y+=p.vy*dt; p.life-=dt; }
+  flamePtcl = flamePtcl.filter(p=>p.life>0);
+}
+function tickExpPtcl(dt) {
+  for(const p of expPtcl){ p.vx*=0.97; p.vy+=GRAV*0.18*dt; p.x+=p.vx*dt; p.y+=p.vy*dt; p.life-=dt; }
+  expPtcl = expPtcl.filter(p=>p.life>0);
+}
+
+function doRestart() {
+  resetAll(); STATE='playing';
+}
+function goMenu() {
+  resetAll(); STATE='menu'; menuEl.style.display='';
+  overlay.style.pointerEvents='auto';
+}
+
+// ══════════════════════════════════════════
+//  DRAW
+// ══════════════════════════════════════════
+function draw() {
+  const W=canvas.width, H=canvas.height, gy=GY(), pad=PAD();
+  ctx.clearRect(0,0,W,H);
+  ctx.fillStyle='#fff'; ctx.fillRect(0,0,W,H);
+
+  // HUD (fixed, no camera)
+  if (STATE !== 'menu') drawHUD(gy);
+
+  // World (camera offset)
+  ctx.save();
+  ctx.translate(-camX, -camY);
+
+  // Ground
+  ctx.strokeStyle='#111'; ctx.lineWidth=2;
+  ctx.beginPath(); ctx.moveTo(0,gy); ctx.lineTo(W,gy); ctx.stroke();
+
+  // Landing pad
+  drawPad(pad, gy);
+
+  // Flame exhaust particles
+  for(const p of flamePtcl){
+    const t=p.life/p.maxLife;
+    ctx.globalAlpha=t*0.88;
+    ctx.fillStyle=`rgb(255,${p.g},0)`;
+    ctx.beginPath(); ctx.arc(p.x,p.y,p.size*(0.35+t*0.65),0,Math.PI*2); ctx.fill();
+  }
+  ctx.globalAlpha=1;
+
+  // Explosion particles
+  for(const p of expPtcl){
+    const t=p.life/p.maxLife;
+    ctx.globalAlpha = p.flash ? t : t*0.85;
+    if(p.flash){
+      ctx.fillStyle=`rgb(255,255,${200+Math.floor(p.g*t)})`;
+    } else if(p.smoke){
+      const v=Math.floor(80+t*100);
+      ctx.fillStyle=`rgb(${v},${v},${v})`;
+    } else {
+      ctx.fillStyle=`rgb(255,${p.g},0)`;
+    }
+    ctx.beginPath(); ctx.arc(p.x,p.y,p.size*(0.4+t*0.6),0,Math.PI*2); ctx.fill();
+  }
+  ctx.globalAlpha=1;
+
+  // Debris
+  for(const p of debris){
+    const t=p.life/p.maxLife;
+    ctx.globalAlpha=Math.min(1,t*2.2);
+    ctx.save(); ctx.translate(p.x,p.y); ctx.rotate(p.angle);
+    ctx.strokeStyle='#111'; ctx.lineWidth=2;
+    ctx.beginPath(); ctx.moveTo(-p.len/2,0); ctx.lineTo(p.len/2,0); ctx.stroke();
+    ctx.restore();
+  }
+  ctx.globalAlpha=1;
+
+  // Astronaut
+  if(astronaut) drawAstronaut(astronaut);
+
+  // Celebration walker
+  if(celebWalk) drawWalker(celebWalk, gy);
+
+  // Fireworks
+  for(const fw of fireworks){
+    for(const p of fw.pts){
+      const t=p.life/p.maxLife;
+      ctx.globalAlpha=t;
+      ctx.strokeStyle=p.color; ctx.lineWidth=1.8;
+      ctx.beginPath(); ctx.moveTo(p.x,p.y);
+      ctx.lineTo(p.x-p.vx*0.038, p.y-p.vy*0.038); ctx.stroke();
+    }
+  }
+  ctx.globalAlpha=1;
+
+  // Rocket (on top)
+  if(rocket && !rocket.dead) drawRocket(rocket);
+
+  ctx.restore();
+
+  // Overlays (fixed)
+  drawOverlays();
+}
+
+// ── drawPad ──
+function drawPad(pad, gy) {
+  // Pad surface (thick bar)
+  ctx.strokeStyle='#111'; ctx.lineWidth=3;
+  ctx.beginPath(); ctx.moveTo(pad-PAD_W/2,gy); ctx.lineTo(pad+PAD_W/2,gy); ctx.stroke();
+  // Legs
+  ctx.lineWidth=2;
+  ctx.beginPath();
+  ctx.moveTo(pad-PAD_W/2,gy); ctx.lineTo(pad-PAD_W/2-13,gy+16);
+  ctx.moveTo(pad+PAD_W/2,gy); ctx.lineTo(pad+PAD_W/2+13,gy+16);
+  ctx.stroke();
+  // "H" landing target painted on the pad surface
+  ctx.strokeStyle='#555'; ctx.lineWidth=1.5;
+  const hW=16, hH=10, hMid=5; // H dimensions
+  // Left vertical
+  ctx.beginPath(); ctx.moveTo(pad-hW, gy-hH); ctx.lineTo(pad-hW, gy); ctx.stroke();
+  // Right vertical
+  ctx.beginPath(); ctx.moveTo(pad+hW, gy-hH); ctx.lineTo(pad+hW, gy); ctx.stroke();
+  // Crossbar
+  ctx.beginPath(); ctx.moveTo(pad-hW, gy-hMid); ctx.lineTo(pad+hW, gy-hMid); ctx.stroke();
+}
+
+// ── drawRocket ──
+// Nose tip is local (0,-RH/2) = TOP. Nozzle is local (0,+RH/2) = BOTTOM.
+// Flame exits from nozzle (bottom) = local +Y direction.
+function drawRocket(r) {
+  ctx.save();
+  ctx.translate(r.x, r.y);
+  ctx.rotate(r.angle);
+
+  const H2=RH/2, W2=RW/2;
+
+  // Flame (exits bottom = local +Y, which in the draw context is literally downward before rotate)
+  if(thrust() && !r.dead && !r.landed){
+    const flk = 0.70+0.30*Math.sin(r.flamePhase);
+    const fh  = (24+Math.random()*22)*flk;
+    const sw  = (Math.random()-.5)*5;
+    // Gradient from (0,H2) downward to (sw, H2+fh) in LOCAL coords
+    const gr = ctx.createLinearGradient(0,H2, sw,H2+fh);
+    gr.addColorStop(0,  'rgba(255,245,100,1)');
+    gr.addColorStop(0.25,'rgba(255,160,0,0.92)');
+    gr.addColorStop(0.65,'rgba(255,50,0,0.65)');
+    gr.addColorStop(1,  'rgba(255,10,0,0)');
+    ctx.fillStyle=gr;
+    ctx.beginPath();
+    ctx.moveTo(-W2*0.72, H2);
+    ctx.quadraticCurveTo(-W2*0.35+sw*0.3, H2+fh*0.5, sw, H2+fh);
+    ctx.quadraticCurveTo( W2*0.35+sw*0.3, H2+fh*0.5, W2*0.72, H2);
+    ctx.closePath(); ctx.fill();
+    // Inner core
+    const cr=ctx.createLinearGradient(0,H2,0,H2+fh*0.45);
+    cr.addColorStop(0,'rgba(255,255,210,0.85)'); cr.addColorStop(1,'rgba(255,200,0,0)');
+    ctx.fillStyle=cr;
+    ctx.beginPath();
+    ctx.moveTo(-W2*0.32,H2);
+    ctx.quadraticCurveTo(0,H2+fh*0.38,0,H2+fh*0.44);
+    ctx.quadraticCurveTo(0,H2+fh*0.38,W2*0.32,H2);
+    ctx.closePath(); ctx.fill();
+  }
+
+  // Body: nose at top (0,-H2), nozzle at bottom (0,+H2)
+  ctx.strokeStyle='#111'; ctx.lineWidth=1.8; ctx.fillStyle='#fff';
+  ctx.beginPath();
+  ctx.moveTo(0,    -H2);       // nose tip
+  ctx.lineTo( W2,  -H2+14);   // nose shoulder R
+  ctx.lineTo( W2,   H2-10);   // body R
+  ctx.lineTo( W2*1.65, H2);   // fin R
+  ctx.lineTo( W2*0.55, H2-14);
+  ctx.lineTo(-W2*0.55, H2-14);
+  ctx.lineTo(-W2*1.65, H2);   // fin L
+  ctx.lineTo(-W2,   H2-10);   // body L
+  ctx.lineTo(-W2,  -H2+14);   // nose shoulder L
+  ctx.closePath();
+  ctx.fill(); ctx.stroke();
+
+  // Nozzle bell at bottom
+  ctx.strokeStyle='#111'; ctx.lineWidth=1.8;
+  ctx.beginPath();
+  ctx.moveTo(-W2*0.65, H2-10); ctx.lineTo(-W2*0.85, H2);
+  ctx.lineTo( W2*0.85, H2);   ctx.lineTo( W2*0.65, H2-10);
+  ctx.stroke();
+
+  // Porthole (near top/nose area)
+  ctx.strokeStyle='#111'; ctx.lineWidth=1.5; ctx.fillStyle='#fff';
+  ctx.beginPath(); ctx.arc(0,-H2+24,5,0,Math.PI*2); ctx.fill(); ctx.stroke();
+
+  // Happy face when landed
+  if(r.landed){
+    ctx.fillStyle='#111';
+    ctx.beginPath(); ctx.arc(-1.5,-H2+23,1.1,0,Math.PI*2); ctx.fill();
+    ctx.beginPath(); ctx.arc( 1.5,-H2+23,1.1,0,Math.PI*2); ctx.fill();
+    ctx.strokeStyle='#111'; ctx.lineWidth=1;
+    ctx.beginPath(); ctx.arc(0,-H2+24.5,2.5,0.1,Math.PI-0.1); ctx.stroke();
+  }
+
+  ctx.restore();
+}
+
+// ── drawAstronaut ──
+function drawAstronaut(a) {
+  ctx.save();
+  ctx.translate(a.x, a.y);
+
+  if(!a.grounded){
+    ctx.rotate(a.angle);
+
+    // Scream text — plain floating text, no box
+    if(a.screamTimer>0){
+      const alpha=Math.min(1,(a.screamTimer/a.screamMax)*2);
+      ctx.globalAlpha=alpha;
+      ctx.font='bold 15px monospace';
+      ctx.fillStyle='#c00';
+      ctx.fillText('AAAH!!!', 10, -28);
+      ctx.globalAlpha=1;
+    }
+
+    const flail=Math.sin(a.angle*2.5)*0.8;
+    ctx.strokeStyle='#111'; ctx.lineWidth=2.2;
+    ctx.beginPath(); ctx.arc(0,-22,6,0,Math.PI*2); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(0,-16); ctx.lineTo(0,-3); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(0,-11); ctx.lineTo(-14+flail*9,-5+flail*7); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(0,-11); ctx.lineTo( 14-flail*9,-5-flail*7); ctx.stroke();
+    const lk=Math.sin(a.angle*1.8)*0.5;
+    ctx.beginPath(); ctx.moveTo(0,-3); ctx.lineTo(-9+lk*12,11); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(0,-3); ctx.lineTo( 9-lk*12,11); ctx.stroke();
+  } else {
+    if(splatDone){
+      ctx.globalAlpha=0.88;
+      for(const b of a.splatBlobs){
+        ctx.fillStyle='#c00';
+        ctx.beginPath(); ctx.ellipse(b.x,b.y,b.r,b.r*0.38,0,0,Math.PI*2); ctx.fill();
+      }
+      const pr  = Math.min(28, 5 + a.splatTime * 40 * (1 + a.intensity));
+      ctx.fillStyle='#d00';
+      ctx.beginPath();
+      for(let i=0;i<=10;i++){
+        const ang=(i/10)*Math.PI*2;
+        // Fixed jitter baked into splatBlobs seed — use blob index as stable noise
+        const jt = 0.75 + Math.sin(ang * 3 + a.finalAngle) * 0.25;
+        const rx = pr * jt * (1.5 + Math.cos(ang)*0.35);
+        const ry = pr * 0.4 * jt;
+        i===0?ctx.moveTo(rx*Math.cos(ang),ry*Math.sin(ang)):ctx.lineTo(rx*Math.cos(ang),ry*Math.sin(ang));
+      }
+      ctx.fill(); ctx.globalAlpha=1;
+
+      ctx.save(); ctx.rotate(a.finalAngle);
+      ctx.strokeStyle='#111'; ctx.lineWidth=2; ctx.scale(1,0.6);
+      ctx.beginPath(); ctx.arc(0,-6,6,0,Math.PI*2); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(0,0); ctx.lineTo(0,9); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(0,4); ctx.lineTo(-14,0); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(0,4); ctx.lineTo( 14,0); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(0,9); ctx.lineTo(-9,16); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(0,9); ctx.lineTo( 9,16); ctx.stroke();
+      ctx.lineWidth=1.5;
+      [-2.5,2.5].forEach(ex=>{
+        ctx.beginPath(); ctx.moveTo(ex-1.5,-7.5); ctx.lineTo(ex+1.5,-4.5);
+        ctx.moveTo(ex+1.5,-7.5); ctx.lineTo(ex-1.5,-4.5); ctx.stroke();
+      });
+      ctx.restore();
+    }
+  }
+  ctx.restore();
+}
+
+// ── drawWalker ──
+function drawWalker(cw, gy) {
+  ctx.save();
+  ctx.translate(cw.x, cw.stage===2 ? cw.jumpY : gy);
+  ctx.strokeStyle='#111'; ctx.lineWidth=2;
+  const bob=cw.stage===0?Math.abs(Math.sin(cw.phase))*3:0;
+  const wlk=cw.stage===0?Math.sin(cw.phase)*9:0;
+  if(cw.stage===3){
+    ctx.beginPath(); ctx.arc(0,-23,5.5,0,Math.PI*2); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(0,-17); ctx.lineTo(0,-4); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(0,-12); ctx.lineTo(-16,-21+Math.sin(cw.phase*2)*6); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(0,-12); ctx.lineTo( 16,-24+Math.sin(cw.phase*2+1)*7); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(0,-4); ctx.lineTo(-7,10); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(0,-4); ctx.lineTo( 7,10); ctx.stroke();
+    ctx.font='bold 14px monospace'; ctx.fillStyle='#e63'; ctx.fillText('!!',-6,-35);
+  } else if(cw.stage===2){
+    ctx.beginPath(); ctx.arc(0,-25,5.5,0,Math.PI*2); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(0,-19); ctx.lineTo(0,-6); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(0,-14); ctx.lineTo(-13,-21); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(0,-14); ctx.lineTo( 13,-21); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(0,-6); ctx.lineTo(-5,8); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(0,-6); ctx.lineTo( 5,8); ctx.stroke();
+  } else {
+    ctx.beginPath(); ctx.arc(0,-22+bob,5.5,0,Math.PI*2); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(0,-16+bob); ctx.lineTo(0,-4+bob); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(0,-11+bob); ctx.lineTo(-9,-6+bob); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(0,-11+bob); ctx.lineTo( 9,-6+bob); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(0,-4+bob); ctx.lineTo(-6+wlk,9+bob); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(0,-4+bob); ctx.lineTo( 6-wlk,9+bob); ctx.stroke();
+  }
+  ctx.restore();
+}
+
+// ── drawHUD ──
+function drawHUD(gy) {
+  if(!rocket) return;
+  const ad=angleDiff(rocket.angle), adDeg=ad*180/Math.PI;
+  const avDeg=rocket.av*180/Math.PI;
+  const spd=Math.hypot(rocket.vx,rocket.vy);
+  const alt=Math.max(0,gy-rocket.y);
+  const pad=PAD();
+  const onPad=rocket.x>pad-PAD_W/2 && rocket.x<pad+PAD_W/2;
+  const vyOk=rocket.vy>0 && rocket.vy<SAFE_VY;
+  const vxOk=Math.abs(rocket.vx)<SAFE_VX;
+  const angOk=ad<SAFE_ANG;
+  const allOk=vyOk&&vxOk&&angOk&&onPad;
+
+  ctx.textAlign='left';
+  const rows=[
+    {lbl:'Vert speed:  ', val:rocket.vy.toFixed(1),            unit:' px/s', ok:vyOk,    hint:`< ${SAFE_VY}`},
+    {lbl:'Horiz speed: ', val:Math.abs(rocket.vx).toFixed(1),  unit:' px/s', ok:vxOk,    hint:`< ${SAFE_VX}`},
+    {lbl:'Total speed: ', val:spd.toFixed(1),                  unit:' px/s', ok:vyOk&&vxOk, hint:''},
+    {lbl:'Angle:       ', val:adDeg.toFixed(1),                unit:'°',     ok:angOk,   hint:'< 15°'},
+    {lbl:'Spin:        ', val:avDeg.toFixed(1),                unit:' °/s',  ok:Math.abs(avDeg)<55, hint:''},
+    {lbl:'Altitude:    ', val:alt.toFixed(0),                  unit:' px',   ok:true,    hint:''},
+    {lbl:'On pad:      ', val:onPad?'YES':'NO',                unit:'',      ok:onPad,   hint:''},
+    {lbl:'Safe to land:', val:allOk?' YES ✓':' NO ✗',         unit:'',      ok:allOk,   hint:''},
+  ];
+
+  const lh=17, sx=10, sy=18;
+  ctx.font='13px monospace';
+  rows.forEach((row,i)=>{
+    const y=sy+i*lh;
+    const full=row.lbl+row.val+row.unit+(row.hint?'  ('+row.hint+')':'');
+    const w=ctx.measureText(full).width+12;
+    ctx.fillStyle='rgba(255,255,255,0.82)';
+    ctx.fillRect(sx-2,y-13,w,15);
+    ctx.fillStyle='#777'; ctx.font='13px monospace';
+    ctx.fillText(row.lbl,sx,y);
+    const lw=ctx.measureText(row.lbl).width;
+    ctx.fillStyle=row.ok?'#070':'#c00'; ctx.font='bold 13px monospace';
+    ctx.fillText(row.val+row.unit,sx+lw,y);
+    if(row.hint){
+      const vw=ctx.measureText(row.val+row.unit).width;
+      ctx.fillStyle='#aaa'; ctx.font='11px monospace';
+      ctx.fillText('  ('+row.hint+')',sx+lw+vw,y);
+    }
+  });
+}
+
+// ── drawOverlays ──
+function drawOverlays() {
+  const W=canvas.width, H=canvas.height;
+
+  // Crash reasons
+  if(crashMsgTimer>0 && crashReasons.length){
+    ctx.globalAlpha=Math.min(1,crashMsgTimer*1.8);
+    ctx.textAlign='center'; ctx.font='bold 30px monospace';
+    crashReasons.forEach((r,i)=>{
+      ctx.fillStyle='rgba(255,255,255,0.75)';
+      ctx.fillText(r,W/2+2,H/2-14+i*40+2);
+      ctx.fillStyle='#c00';
+      ctx.fillText(r,W/2,H/2-14+i*40);
+    });
+    ctx.globalAlpha=1;
+  }
+
+  // Landing
+  if(STATE==='landed'){
+    const fade=Math.min(1,landedTimer*5);
+    ctx.globalAlpha=fade; ctx.textAlign='center';
+    const lbl=lastScore>=90?'★ PERFECT ★':lastScore>=70?'✦ GREAT ✦':lastScore>=50?'✧ GOOD ✧':'ROUGH LANDING';
+    const clr=lastScore>=90?'#060':lastScore>=70?'#660':'#444';
+    ctx.fillStyle='rgba(255,255,255,0.92)';
+    ctx.fillRect(W/2-205,H/2-86,410,112);
+    ctx.strokeStyle='#111'; ctx.lineWidth=2;
+    ctx.strokeRect(W/2-205,H/2-86,410,112);
+    ctx.font='bold 52px monospace'; ctx.fillStyle='#111';
+    ctx.fillText('TOUCHDOWN!',W/2,H/2-22);
+    ctx.font='bold 20px monospace'; ctx.fillStyle=clr;
+    ctx.fillText(lbl+'  ·  Score: '+lastScore+'/100',W/2,H/2+13);
+    ctx.globalAlpha=1;
+    if(landedTimer>1.5){
+      const blink=Math.sin(landedTimer*3)>0?1:0.3;
+      ctx.globalAlpha=Math.min(1,(landedTimer-1.5)*2)*blink;
+      ctx.font='15px monospace'; ctx.fillStyle='#333';
+      ctx.fillText('— PRESS ANY KEY TO PLAY AGAIN —',W/2,H-45);
+      ctx.globalAlpha=1;
+    }
+  }
+
+  // Crash: show press-to-restart prompt once astronaut has landed
+  if(STATE==='crashed'){
+    const showPrompt = crashTimer > 1.0 && (astronaut ? astronaut.grounded : true);
+    if(showPrompt){
+      const blink=Math.sin(crashTimer*3)>0?1:0.35;
+      ctx.globalAlpha=Math.min(1,(crashTimer-1.0)*2)*blink;
+      ctx.font='15px monospace'; ctx.textAlign='center'; ctx.fillStyle='#333';
+      ctx.fillText('— PRESS ANY KEY TO TRY AGAIN —',W/2,H-45);
+      ctx.globalAlpha=1;
+    }
+  }
+  if(STATE==='landing_freeze'){
+    ctx.fillStyle='rgba(255,255,255,0.2)'; ctx.fillRect(0,0,W,H);
+  }
+
+  // ESC hint
+  if(STATE!=='menu'){
+    ctx.globalAlpha=0.25; ctx.font='11px monospace'; ctx.textAlign='right'; ctx.fillStyle='#111';
+    ctx.fillText('ESC = menu',W-10,H-10); ctx.globalAlpha=1;
+  }
+
+  ctx.textAlign='left';
+}
+
+// ══════════════════════════════════════════
+//  INPUT HANDLING
+// ══════════════════════════════════════════
+addEventListener('keydown', e => {
+  // Escape = go to menu
+  if(e.code==='Escape' && STATE!=='menu'){ goMenu(); return; }
+
+  if(STATE==='menu'){
+    // Hide menu, start game
+    menuEl.style.display='none';
+    overlay.style.pointerEvents='none';
+    resetAll();
+    STATE='playing';
+    lastT=performance.now();
+    return;
+  }
+
+  if(STATE==='landed'){ doRestart(); return; }
+  // On crash: only allow restart once the astronaut has splated (or after 1.5s fallback)
+  if(STATE==='crashed'){
+    const canRestart = crashTimer > 1.5 && (astronaut ? astronaut.grounded : true);
+    if(canRestart){ doRestart(); return; }
+  }
+});
+
+addEventListener('touchstart', e=>{
+  if(STATE==='menu'){
+    menuEl.style.display='none';
+    overlay.style.pointerEvents='none';
+    resetAll(); STATE='playing'; lastT=performance.now();
+    return;
+  }
+  if(STATE==='landed'){ doRestart(); return; }
+  if(STATE==='crashed'){
+    const canRestart = crashTimer > 1.5 && (astronaut ? astronaut.grounded : true);
+    if(canRestart){ doRestart(); return; }
+  }
+},{passive:true});
+
+addEventListener('click', ()=>{
+  if(STATE==='menu'){
+    menuEl.style.display='none';
+    overlay.style.pointerEvents='none';
+    resetAll(); STATE='playing'; lastT=performance.now();
+  }
+});
+</script>
+</body>
+</html>
